@@ -32,11 +32,12 @@ CREATE TABLE sales (
 CREATE TABLE exceptions (
   depot_id   integer REFERENCES depots (depot_id),
   product_id integer REFERENCES products (product_id),
-  counter    integer,
   period     integer,
+  counter    integer,
   PRIMARY KEY (depot_id, product_id, period)
 );
 CREATE TABLE periods (
+	id    serial,
 	value bigint PRIMARY KEY
 );
 

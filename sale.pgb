@@ -1,20 +1,47 @@
-\set PERIOD_LENGTH 10
+\set PERIOD_LENGTH 100
 \set depots_num 10
 \set products_num 1000
-\set depot_id random(1, 50000)
+\set d_id (1)
+-- random(1, :depots_num)
+\set pr_id (1)
+-- random(1, :products_num)
 
-SELECT (extract(epoch FROM CURRENT_TIMESTAMP)::bigint / :PERIOD_LENGTH)::integer
+-- Detect current 'period' - kinda "sales between supplies"
+SELECT (extract(epoch FROM CURRENT_TIMESTAMP)::bigint / :PERIOD_LENGTH)::bigint
   AS per_id \gset
 
--- Check period switch and, as a result, supply.
+-- Check period switch and, as a result, perform supply.
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
   SELECT COALESCE(max(value),0) AS current_period FROM periods \gset
   \if (:per_id > :current_period)
     -- Perform supply
 	UPDATE supplies SET quantity = quantity_predicted + 
 	  0.1 * quantity_predicted * random() - 0.1 * quantity_predicted * random();
+	INSERT INTO periods (value) VALUES (:per_id);
   \endif
-END
+END;
+
+-- Make sale
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+  SELECT quantity AS qty FROM supplies
+    WHERE depot_id = :d_id AND product_id = :pr_id \gset
+
+  \if (:qty > 0)
+    -- Main track
+    UPDATE supplies SET quantity = quantity - 1
+    WHERE depot_id = :d_id AND product_id = :pr_id;
+  \else
+    -- We apologise to the client and mark we need more
+	INSERT INTO exceptions AS e (depot_id,product_id,period,counter)
+      VALUES (:d_id,:pr_id,:per_id,1)
+      ON CONFLICT (depot_id,product_id,period)
+      DO UPDATE SET counter = e.counter + 1;
+  \endif
+
+  -- log the sale
+  INSERT INTO sales (depot_id,product_id,period,success)
+    VALUES (:d_id, :pr_id, :per_id, (:qty > 0)::boolean);
+END;
 
 /*
 INSERT INTO exceptions AS e (depot_id,product_id,period,counter)
