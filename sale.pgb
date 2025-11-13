@@ -1,0 +1,24 @@
+\set PERIOD_LENGTH 10
+\set depots_num 10
+\set products_num 1000
+\set depot_id random(1, 50000)
+
+SELECT (extract(epoch FROM CURRENT_TIMESTAMP)::bigint / :PERIOD_LENGTH)::integer
+  AS per_id \gset
+
+-- Check period switch and, as a result, supply.
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+  SELECT COALESCE(max(value),0) AS current_period FROM periods \gset
+  \if (:per_id > :current_period)
+    -- Perform supply
+	UPDATE supplies SET quantity = quantity_predicted + 
+	  0.1 * quantity_predicted * random() - 0.1 * quantity_predicted * random();
+  \endif
+END
+
+/*
+INSERT INTO exceptions AS e (depot_id,product_id,period,counter)
+  VALUES (1,1,:per_id,1)
+  ON CONFLICT (depot_id,product_id,period)
+  DO UPDATE SET counter = e.counter + 1;
+*/
