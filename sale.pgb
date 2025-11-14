@@ -1,9 +1,17 @@
+-- -----------------------------------------------------------------------------
+--
+-- We use REPEATABLE READ isolation level to implement complex logic. Hence,
+-- serialisation conflicts are highly probable. Use --max-tries pgbench option
+-- to let the test pass.
+--
+-- -----------------------------------------------------------------------------
+
 \set PERIOD_LENGTH 100
 \set depots_num 10
 \set products_num 1000
-\set d_id (1)
+\set d_id random(1, :depots_num)
 -- random(1, :depots_num)
-\set pr_id (1)
+\set pr_id random(1, :products_num)
 -- random(1, :products_num)
 
 -- Detect current 'period' - kinda "sales between supplies"
@@ -11,6 +19,7 @@ SELECT (extract(epoch FROM CURRENT_TIMESTAMP)::bigint / :PERIOD_LENGTH)::bigint
   AS per_id \gset
 
 -- Check period switch and, as a result, perform supply.
+-- TODO: calculate predicted quantity for the next period.
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
   SELECT COALESCE(max(value),0) AS current_period FROM periods \gset
   \if (:per_id > :current_period)
@@ -22,8 +31,13 @@ BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 END;
 
 -- Make sale
+
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-  SELECT quantity AS qty FROM supplies
+  SELECT do_sale(:d_id, :pr_id, :per_id);
+END;
+
+
+/*  SELECT quantity AS qty FROM supplies
     WHERE depot_id = :d_id AND product_id = :pr_id \gset
 
   \if (:qty > 0)
@@ -41,7 +55,7 @@ BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
   -- log the sale
   INSERT INTO sales (depot_id,product_id,period,success)
     VALUES (:d_id, :pr_id, :per_id, (:qty > 0)::boolean);
-END;
+	*/
 
 /*
 INSERT INTO exceptions AS e (depot_id,product_id,period,counter)
