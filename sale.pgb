@@ -6,31 +6,39 @@
 --
 -- -----------------------------------------------------------------------------
 
-\set PERIOD_LENGTH 100
+\set PERIOD_LENGTH 10
 \set depots_num 10
 \set products_num 1000
-\set d_id random(1, :depots_num)
-\set pr_id random(1, :products_num)
 
 -- Detect current 'period' - kinda "sales between supplies"
 SELECT (extract(epoch FROM CURRENT_TIMESTAMP)::bigint / :PERIOD_LENGTH)::bigint
   AS per_id \gset
 
+SELECT my_region(inet_server_port()) AS region \gset
+
 -- Check period switch and, as a result, perform supply.
 -- TODO: calculate predicted quantity for the next period.
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-  SELECT COALESCE(max(value),0) AS current_period FROM periods \gset
-  \if (:per_id > :current_period)
-    -- Perform supply
-	UPDATE supplies SET quantity = quantity_predicted + 
-	  0.1 * quantity_predicted * random() - 0.1 * quantity_predicted * random();
-	INSERT INTO periods (value) VALUES (:per_id);
-  \endif
+  SELECT is_supplier(:per_id, ':region') AS is_supplier \gset
 END;
+
+\if (:is_supplier)
+  /*
+   * Calculate necessary quantity for each depot and product in the current
+   * region and perform supply.
+   */
+  UPDATE supplies s
+  SET
+    quantity_predicted = quantity + supply_calc(quantity_predicted, quantity),
+    quantity = quantity + supply_calc(quantity_predicted, quantity),
+  FROM depots d WHERE s.depot_id = d.depot_id AND d.country = :region;
+\endif
 
 -- Make sale
 
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+  SELECT depot_id AS d_id, product_id AS pr_id FROM supplies JOIN depots USING (depot_id) WHERE country = ':region' ORDER BY random() LIMIT 1 \gset
+  
   SELECT do_sale(:d_id, :pr_id, :per_id);
 END;
 

@@ -1,14 +1,15 @@
 DROP TABLE IF EXISTS
   supplies,sales,exceptions,depots,products,periods
 CASCADE;
-DROP FUNCTION IF EXISTS do_sale,is_supplier;
+DROP FUNCTION IF EXISTS do_sale,is_supplier,supply_calc,my_region;
 
 \set depots_num 10
 \set products_num 1000
 
 CREATE TABLE depots (
-	depot_id integer PRIMARY KEY,
+	depot_id serial PRIMARY KEY,
 	label    name NOT NULL,
+	country  name NOT NULL,
 	active   boolean DEFAULT true
 );
 CREATE TABLE products (
@@ -39,12 +40,16 @@ CREATE TABLE exceptions (
 );
 CREATE TABLE periods (
 	id    serial,
-	value bigint PRIMARY KEY
+	country  name NOT NULL, -- Need to separate data
+	value bigint,
+	PRIMARY KEY (value, country)
 );
 
-INSERT INTO depots (depot_id,label)
-  SELECT value, 'Depot No. ' || value
+INSERT INTO depots (depot_id,label, country)
+  SELECT value, 'Depot No. ' || value,
+    CASE WHEN (value < :depots_num / 2) THEN 'US' ELSE 'AUS' END
   FROM generate_series(1,:depots_num) AS value;
+  
 INSERT INTO products (product_id,label)
   SELECT value, 'Product No. ' || value
   FROM generate_series(1,:products_num) AS value;
@@ -56,21 +61,59 @@ INSERT INTO supplies (depot_id,product_id,quantity,quantity_predicted)
 
 ANALYZE;
 
-CREATE FUNCTION is_supplier(period integer)
-RETURNS boolean AS $$
+/* *****************************************************************************
+ *
+ * Service routines
+ *
+ **************************************************************************** */
+
+/*
+ * What is my region?
+ *
+ * There may be different approaches to identify the region. Use '-D' to pass a
+ * variable, for example. Use the most simple way to exclude an error during the
+ * test.
+ */
+CREATE FUNCTION my_region(port integer)
+RETURNS name AS $$
 DECLARE
 	c_period integer;
 BEGIN
-  SELECT COALESCE(max(value),0) FROM periods INTO c_period;
+  IF (port = 5432) THEN
+    RETURN 'US';
+  ELSIF (port = 5433) THEN
+    RETURN 'AUS';
+  ELSE
+    raise EXCEPTION 'Incorrect port in the test: %', port;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+--
+-- Am I a supplier in the region?
+--
+CREATE FUNCTION is_supplier(period integer, region name)
+RETURNS boolean AS $$
+DECLARE
+	c_period integer;
+	per_id   integer;
+BEGIN
+  SELECT COALESCE(max(value),0) FROM periods INTO c_period
+  WHERE country = region;
   IF (period > c_period) THEN
-	INSERT INTO periods (value) VALUES (period);
+	INSERT INTO periods (value,country) VALUES (period, region);
 	
 	-- In the REPEATABLE READ case only one client will arrive here - others
 	-- will be aborted and re-trying will be in the new period.
-	RETURN true;
   END IF;
   
   -- Normal case: no supply needed, just go shopping.
+  RETURN false;
+  
+  EXCEPTION
+    WHEN OTHERS THEN
+	 NULL;
+  
   RETURN false;
 END;
 $$ LANGUAGE plpgsql;
@@ -81,7 +124,7 @@ $$ LANGUAGE plpgsql;
  * 2. Sale it or complain into exceptions.
  * 3. Write the fact of the sale attempt.
  *
- * TODO: In case of unsuccessful sale checl the counter. If it is too big, try
+ * TODO: In case of unsuccessful sale check the counter. If it is too big, try
  * to request products from another depot.
  */
 CREATE FUNCTION do_sale(d_id integer,pr_id integer, per_id bigint)
@@ -110,3 +153,29 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+--
+-- Calculate how much quantity of each product we should deliver to the depot
+--
+CREATE FUNCTION supply_calc(qp integer, balance integer)
+RETURNS integer AS $$
+DECLARE
+	delta integer;
+	p     integer;
+BEGIN
+  delta := qp - balance;
+  
+  IF (delta < 0) THEN
+    raise EXCEPTION 'Incorrect balance in the depot: (%, %)', qp, balance;
+  END IF;
+  
+  -- Add variable part into the 10%. It makes our data more lively ;)
+  p :=  delta * ((0.2 * random()) - (0.2 * random()));
+  
+  IF (balance + delta + p <= 0) THEN
+    -- safety measure
+    RETURN 0;
+  END IF;
+
+  RETURN delta + p;
+END;
+$$ LANGUAGE plpgsql STRICT VOLATILE;
