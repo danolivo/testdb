@@ -37,7 +37,9 @@ END;
 -- Make sale
 
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-  SELECT depot_id AS d_id, product_id AS pr_id FROM supplies JOIN depots USING (depot_id) WHERE country = ':region' ORDER BY random() LIMIT 1 \gset
+  SELECT depot_id AS d_id, product_id AS pr_id FROM supplies
+    JOIN depots USING (depot_id) WHERE country = ':region'
+	ORDER BY random() LIMIT 1 \gset
   
   SELECT do_sale(:d_id, :pr_id, :per_id);
 END;
