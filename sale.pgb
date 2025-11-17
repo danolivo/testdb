@@ -10,9 +10,7 @@
 \set depots_num 10
 \set products_num 1000
 \set d_id random(1, :depots_num)
--- random(1, :depots_num)
 \set pr_id random(1, :products_num)
--- random(1, :products_num)
 
 -- Detect current 'period' - kinda "sales between supplies"
 SELECT (extract(epoch FROM CURRENT_TIMESTAMP)::bigint / :PERIOD_LENGTH)::bigint

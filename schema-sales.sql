@@ -1,7 +1,7 @@
 DROP TABLE IF EXISTS
   supplies,sales,exceptions,depots,products,periods
 CASCADE;
-DROP FUNCTION IF EXISTS do_sale;
+DROP FUNCTION IF EXISTS do_sale,is_supplier;
 
 \set depots_num 10
 \set products_num 1000
@@ -55,6 +55,25 @@ INSERT INTO supplies (depot_id,product_id,quantity,quantity_predicted)
   SELECT depot_id,product_id,0,100 FROM depots, products;
 
 ANALYZE;
+
+CREATE FUNCTION is_supplier(period integer)
+RETURNS boolean AS $$
+DECLARE
+	c_period integer;
+BEGIN
+  SELECT COALESCE(max(value),0) FROM periods INTO c_period;
+  IF (period > c_period) THEN
+	INSERT INTO periods (value) VALUES (period);
+	
+	-- In the REPEATABLE READ case only one client will arrive here - others
+	-- will be aborted and re-trying will be in the new period.
+	RETURN true;
+  END IF;
+  
+  -- Normal case: no supply needed, just go shopping.
+  RETURN false;
+END;
+$$ LANGUAGE plpgsql;
 
 /*
  * Perform sale logic:
