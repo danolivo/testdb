@@ -27,11 +27,7 @@ END;
    * Calculate necessary quantity for each depot and product in the current
    * region and perform supply.
    */
-  UPDATE supplies s
-  SET
-    quantity_predicted = quantity + supply_calc(quantity_predicted, quantity),
-    quantity = quantity + supply_calc(quantity_predicted, quantity),
-  FROM depots d WHERE s.depot_id = d.depot_id AND d.country = :region;
+  CALL do_supply(':region', :per_id);
 \endif
 
 -- Make sale

@@ -1,7 +1,8 @@
 DROP TABLE IF EXISTS
-  supplies,sales,exceptions,depots,products,periods
+  supplies,sales,exceptions,depots,products,periods,deliveries
 CASCADE;
 DROP FUNCTION IF EXISTS do_sale,is_supplier,supply_calc,my_region;
+DROP PROCEDURE IF EXISTS do_supply;
 
 \set depots_num 10
 \set products_num 1000
@@ -28,35 +29,42 @@ CREATE TABLE sales (
   sale_id    serial PRIMARY KEY,
   depot_id   integer REFERENCES depots (depot_id),
   product_id integer REFERENCES products (product_id),
-  period     integer,
+  period     bigint,
   success    boolean
 );
 CREATE TABLE exceptions (
   depot_id   integer REFERENCES depots (depot_id),
   product_id integer REFERENCES products (product_id),
-  period     integer,
+  period     bigint,
   counter    integer,
   PRIMARY KEY (depot_id, product_id, period)
 );
 CREATE TABLE periods (
-	id    serial,
+	id       serial,
 	country  name NOT NULL, -- Need to separate data
-	value bigint,
+	value    bigint,
 	PRIMARY KEY (value, country)
 );
+CREATE TABLE deliveries (
+  depot_id   integer REFERENCES depots (depot_id),
+  product_id integer REFERENCES products (product_id),
+  period     bigint,
+  delta      integer,
+  PRIMARY KEY (depot_id,product_id,period)
+);
 
-INSERT INTO depots (depot_id,label, country)
+INSERT INTO depots (depot_id, label, country)
   SELECT value, 'Depot No. ' || value,
     CASE WHEN (value < :depots_num / 2) THEN 'US' ELSE 'AUS' END
   FROM generate_series(1,:depots_num) AS value;
   
-INSERT INTO products (product_id,label)
+INSERT INTO products (product_id, label)
   SELECT value, 'Product No. ' || value
   FROM generate_series(1,:products_num) AS value;
 
 -- Initially, each depot contains zero value of each product: first incoming
 -- transaction will perform supply.
-INSERT INTO supplies (depot_id,product_id,quantity,quantity_predicted)
+INSERT INTO supplies (depot_id, product_id, quantity, quantity_predicted)
   SELECT depot_id,product_id,0,100 FROM depots, products;
 
 ANALYZE;
@@ -76,8 +84,6 @@ ANALYZE;
  */
 CREATE FUNCTION my_region(port integer)
 RETURNS name AS $$
-DECLARE
-	c_period integer;
 BEGIN
   IF (port = 5432) THEN
     RETURN 'US';
@@ -92,11 +98,10 @@ $$ LANGUAGE plpgsql;
 --
 -- Am I a supplier in the region?
 --
-CREATE FUNCTION is_supplier(period integer, region name)
+CREATE FUNCTION is_supplier(period bigint, region name)
 RETURNS boolean AS $$
 DECLARE
-	c_period integer;
-	per_id   integer;
+	c_period bigint;
 BEGIN
   SELECT COALESCE(max(value),0) FROM periods INTO c_period
   WHERE country = region;
@@ -105,6 +110,7 @@ BEGIN
 	
 	-- In the REPEATABLE READ case only one client will arrive here - others
 	-- will be aborted and re-trying will be in the new period.
+	RETURN true;
   END IF;
   
   -- Normal case: no supply needed, just go shopping.
@@ -115,6 +121,40 @@ BEGIN
 	 NULL;
   
   RETURN false;
+END;
+$$ LANGUAGE plpgsql;
+
+/*
+ * Perform supply
+ *
+ * Pass through each (depot,product) record, calculate necessary quantity and
+ * perform update
+ */
+CREATE PROCEDURE do_supply(region name, period bigint)
+AS $$
+DECLARE
+	r record;
+BEGIN
+  CREATE TEMPORARY TABLE tdata AS
+    SELECT s.depot_id,s.product_id,s.quantity,s.quantity_predicted AS plan,
+	  supply_calc(quantity_predicted, quantity) AS delta
+	FROM supplies s JOIN depots d USING (depot_id) WHERE d.country = region;
+  
+  FOR r IN SELECT * FROM tdata LOOP
+	-- Calculate necessary supply and UPDATE the row
+	UPDATE supplies
+	SET quantity = quantity + r.delta, quantity_predicted = r.quantity + r.delta
+	WHERE depot_id = r.depot_id AND product_id = r.product_id;
+	
+--	raise NOTICE 'Supply (% %) for period % delta %',
+--	  r.depot_id,r.product_id,period,r.delta;
+	
+	INSERT INTO deliveries (depot_id,product_id,period,delta)
+	  VALUES (r.depot_id, r.product_id, period, r.delta);
+	COMMIT;
+  END LOOP;
+  
+  DROP TABLE tdata;
 END;
 $$ LANGUAGE plpgsql;
 
