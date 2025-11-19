@@ -7,25 +7,42 @@
 -- Just to see how much work was done and where.
 SELECT * FROM periods ORDER BY value;
 
-SELECT count(*) FROM sales WHERE success = true;
+-- Integral checks:
 
-SELECT count(*) FROM sales WHERE success = false
-  UNION ALL
-SELECT sum(counter) FROM exceptions;
+-- Check: sum of all deliveries - leftovers == sales
+SELECT count(*) AS sold FROM sales WHERE success = true
+UNION ALL (
+SELECT delivered - leftovers FROM
+  (SELECT sum(delta) AS delivered FROM deliveries),
+  (SELECT sum(quantity) AS leftovers FROM supplies)
+);
 
--- Sales on each period for specific depot
-SELECT p.id,depot_id, count(*) FROM sales s
-  JOIN periods p ON (s.period = p.value)
-WHERE success = true AND p.country = 'US'
-GROUP BY id,depot_id ORDER BY id,depot_id;
+-- Check: unsuccessful sales
+SELECT 'exceptions' AS title, sum(counter) AS number FROM exceptions
+	UNION ALL
+SELECT 'unsuccessful sales', count(*) FROM sales WHERE success = false;
 
--- Sum supplies on each period for specific depot
+-- Checks for each depot:
 
-SELECT sum(counter) FROM exceptions;
-SELECT * FROM deliveries;
+-- Failed sales:
+SELECT * FROM (
+  SELECT sum(counter) AS exceptions, depot_id
+  FROM exceptions GROUP BY depot_id
+) JOIN (
+  SELECT count(*) AS "failed sales", depot_id
+  FROM sales WHERE success = false GROUP BY depot_id)
+  USING (depot_id)
+ORDER BY depot_id;
 
-
-SELECT p.id,depot_id, sum(delta) FROM deliveries d
-  JOIN periods p ON (d.period = p.value)
-WHERE p.country = 'US'
-GROUP BY id,depot_id ORDER BY id,depot_id;
+-- Successful sales:
+SELECT * FROM (
+  SELECT depot_id, delivered - leftovers AS sold_1 FROM
+    (SELECT depot_id, sum(delta) AS delivered FROM deliveries GROUP BY depot_id)
+      JOIN
+    (SELECT depot_id, sum(quantity) AS leftovers FROM supplies GROUP BY depot_id)
+    USING (depot_id)
+  ) JOIN (
+	  SELECT depot_id, count(*) AS sold_2 FROM sales
+	  WHERE success = true GROUP BY depot_id
+  ) USING (depot_id)
+ORDER BY depot_id;
