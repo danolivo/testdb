@@ -5,7 +5,7 @@
  */
 
 -- Just to see how much work was done and where.
-SELECT * FROM periods ORDER BY value,id;
+SELECT * FROM periods ORDER BY create_time,value;
 
 -- Integral checks:
 

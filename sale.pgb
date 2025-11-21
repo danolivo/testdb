@@ -6,12 +6,10 @@
  *
  **************************************************************************** */
 
-\set PERIOD_LENGTH 10
-\set depots_num 10
-\set products_num 1000
+\set period_length 10
 
 -- Detect current 'period' - kinda "sales between supplies"
-SELECT (extract(epoch FROM CURRENT_TIMESTAMP)::bigint / :PERIOD_LENGTH)::bigint
+SELECT (extract(epoch FROM CURRENT_TIMESTAMP)::bigint / :period_length)::bigint
   AS per_id \gset
 
 -- Check period switch and, as a result, perform supply.

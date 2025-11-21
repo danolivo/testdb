@@ -40,9 +40,9 @@ CREATE TABLE exceptions (
   PRIMARY KEY (depot_id, product_id, period)
 );
 CREATE TABLE periods (
-	id       serial,
-	country  name NOT NULL, -- Need to separate data
-	value    bigint,
+	country     name NOT NULL, -- Need to separate data
+	value       bigint,
+	create_time TimestampTz DEFAULT CURRENT_TIMESTAMP,
 	PRIMARY KEY (value, country)
 );
 CREATE TABLE deliveries (
@@ -67,6 +67,8 @@ INSERT INTO products (product_id, label)
 INSERT INTO supplies (depot_id, product_id, quantity, quantity_predicted)
   SELECT depot_id,product_id,0,100 FROM depots, products;
 
+INSERT INTO periods (country, value)
+  VALUES ('US', 0),('AUS', 0);
 ANALYZE;
 
 /* *****************************************************************************
@@ -90,6 +92,7 @@ BEGIN
 	
 	-- In the REPEATABLE READ case only one client will arrive here - others
 	-- will be aborted and re-trying will be in the new period.
+	raise LOG '--> Create new period % in region %', period,region;
 	RETURN true;
   END IF;
   
@@ -125,9 +128,6 @@ BEGIN
 	UPDATE supplies
 	SET quantity = quantity + r.delta, quantity_predicted = r.quantity + r.delta
 	WHERE depot_id = r.depot_id AND product_id = r.product_id;
-	
---	raise NOTICE 'Supply (% %) for period % delta %',
---	  r.depot_id,r.product_id,period,r.delta;
 	
 	INSERT INTO deliveries (depot_id,product_id,period,delta)
 	  VALUES (r.depot_id, r.product_id, period, r.delta);
