@@ -37,31 +37,3 @@ BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
   
   SELECT do_sale(:d_id, :pr_id, :per_id);
 END;
-
-
-/*  SELECT quantity AS qty FROM supplies
-    WHERE depot_id = :d_id AND product_id = :pr_id \gset
-
-  \if (:qty > 0)
-    -- Main track
-    UPDATE supplies SET quantity = quantity - 1
-    WHERE depot_id = :d_id AND product_id = :pr_id;
-  \else
-    -- We apologise to the client and mark we need more
-	INSERT INTO exceptions AS e (depot_id,product_id,period,counter)
-      VALUES (:d_id,:pr_id,:per_id,1)
-      ON CONFLICT (depot_id,product_id,period)
-      DO UPDATE SET counter = e.counter + 1;
-  \endif
-
-  -- log the sale
-  INSERT INTO sales (depot_id,product_id,period,success)
-    VALUES (:d_id, :pr_id, :per_id, (:qty > 0)::boolean);
-	*/
-
-/*
-INSERT INTO exceptions AS e (depot_id,product_id,period,counter)
-  VALUES (1,1,:per_id,1)
-  ON CONFLICT (depot_id,product_id,period)
-  DO UPDATE SET counter = e.counter + 1;
-*/
