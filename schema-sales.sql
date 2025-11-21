@@ -75,26 +75,6 @@ ANALYZE;
  *
  **************************************************************************** */
 
-/*
- * What is my region?
- *
- * There may be different approaches to identify the region. Use '-D' to pass a
- * variable, for example. Use the most simple way to exclude an error during the
- * test.
- */
-CREATE FUNCTION my_region(port integer)
-RETURNS name AS $$
-BEGIN
-  IF (port = 5432) THEN
-    RETURN 'US';
-  ELSIF (port = 5433) THEN
-    RETURN 'AUS';
-  ELSE
-    raise EXCEPTION 'Incorrect port in the test: %', port;
-  END IF;
-END;
-$$ LANGUAGE plpgsql;
-
 --
 -- Am I a supplier in the region?
 --

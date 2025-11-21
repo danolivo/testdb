@@ -1,10 +1,10 @@
--- -----------------------------------------------------------------------------
---
--- We use REPEATABLE READ isolation level to implement complex logic. Hence,
--- serialisation conflicts are highly probable. Use --max-tries pgbench option
--- to let the test pass.
---
--- -----------------------------------------------------------------------------
+/* *****************************************************************************
+ *
+ * We use REPEATABLE READ isolation level to implement complex logic. Hence,
+ * serialisation conflicts are highly probable. Use --max-tries pgbench option
+ * to let the test pass.
+ *
+ **************************************************************************** */
 
 \set PERIOD_LENGTH 10
 \set depots_num 10
@@ -13,8 +13,6 @@
 -- Detect current 'period' - kinda "sales between supplies"
 SELECT (extract(epoch FROM CURRENT_TIMESTAMP)::bigint / :PERIOD_LENGTH)::bigint
   AS per_id \gset
-
-SELECT my_region(inet_server_port()) AS region \gset
 
 -- Check period switch and, as a result, perform supply.
 -- TODO: calculate predicted quantity for the next period.
