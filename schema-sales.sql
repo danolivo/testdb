@@ -1,17 +1,25 @@
 DROP TABLE IF EXISTS
   supplies,sales,exceptions,depots,products,periods,deliveries
 CASCADE;
-DROP FUNCTION IF EXISTS do_sale,is_supplier,supply_calc,my_region;
-DROP PROCEDURE IF EXISTS do_supply;
+DROP FUNCTION IF EXISTS do_sale,is_supplier,supply_calc;
+DROP PROCEDURE IF EXISTS do_supply,add_depots,schema_init;
 
-\set depots_num 10
+-- Number of depots at each region
+\set depots_num 5
+
 \set products_num 1000
 
+/* *****************************************************************************
+ *
+ * TABLE Definitions
+ *
+ **************************************************************************** */
 CREATE TABLE depots (
-	depot_id serial PRIMARY KEY,
+	depot_id serial,
 	label    name NOT NULL,
 	country  name NOT NULL,
-	active   boolean DEFAULT true
+	active   boolean DEFAULT true,
+	PRIMARY KEY (depot_id)
 );
 CREATE TABLE products (
 	product_id integer PRIMARY KEY,
@@ -26,11 +34,13 @@ CREATE TABLE supplies (
   PRIMARY KEY (depot_id, product_id)
 );
 CREATE TABLE sales (
-  sale_id    serial PRIMARY KEY,
+  sale_id    serial,
+  country    name,
   depot_id   integer REFERENCES depots (depot_id),
   product_id integer REFERENCES products (product_id),
   period     bigint,
-  success    boolean
+  success    boolean,
+  PRIMARY KEY (sale_id,country) -- two elements to avoid conflicts
 );
 CREATE TABLE exceptions (
   depot_id   integer REFERENCES depots (depot_id),
@@ -40,7 +50,7 @@ CREATE TABLE exceptions (
   PRIMARY KEY (depot_id, product_id, period)
 );
 CREATE TABLE periods (
-	country     name NOT NULL, -- Need to separate data
+	country     name NOT NULL, -- Need to separate instance's data access
 	value       bigint,
 	create_time TimestampTz DEFAULT CURRENT_TIMESTAMP,
 	PRIMARY KEY (value, country)
@@ -52,24 +62,6 @@ CREATE TABLE deliveries (
   delta      integer,
   PRIMARY KEY (depot_id,product_id,period)
 );
-
-INSERT INTO depots (depot_id, label, country)
-  SELECT value, 'Depot No. ' || value,
-    CASE WHEN (value < :depots_num / 2) THEN 'US' ELSE 'AUS' END
-  FROM generate_series(1,:depots_num) AS value;
-  
-INSERT INTO products (product_id, label)
-  SELECT value, 'Product No. ' || value
-  FROM generate_series(1,:products_num) AS value;
-
--- Initially, each depot contains zero value of each product: first incoming
--- transaction will perform supply.
-INSERT INTO supplies (depot_id, product_id, quantity, quantity_predicted)
-  SELECT depot_id,product_id,0,100 FROM depots, products;
-
-INSERT INTO periods (country, value)
-  VALUES ('US', 0),('AUS', 0);
-ANALYZE;
 
 /* *****************************************************************************
  *
@@ -118,6 +110,7 @@ AS $$
 DECLARE
 	r record;
 BEGIN
+  raise LOG '--> supply % %', region, period;
   CREATE TEMPORARY TABLE tdata AS
     SELECT s.depot_id,s.product_id,s.quantity,s.quantity_predicted AS plan,
 	  supply_calc(quantity_predicted, quantity) AS delta
@@ -147,11 +140,12 @@ $$ LANGUAGE plpgsql;
  * TODO: In case of unsuccessful sale check the counter. If it is too big, try
  * to request products from another depot.
  */
-CREATE FUNCTION do_sale(d_id integer,pr_id integer, per_id bigint)
+CREATE FUNCTION do_sale(region name, d_id integer,pr_id integer, per_id bigint)
 RETURNS VOID AS $$
 DECLARE
 	qty integer;
 BEGIN
+  -- raise LOG '--> do sale % % %', d_id, pr_id, per_id;
   SELECT quantity AS qty FROM supplies
     WHERE depot_id = d_id AND product_id = pr_id INTO qty;
 
@@ -168,8 +162,8 @@ BEGIN
   END IF;
 
   -- log the sale
-  INSERT INTO sales (depot_id,product_id,period,success)
-    VALUES (d_id, pr_id, per_id, (qty > 0)::boolean);
+  INSERT INTO sales (country, depot_id,product_id,period,success)
+    VALUES (region, d_id, pr_id, per_id, (qty > 0)::boolean);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -197,5 +191,123 @@ BEGIN
   END IF;
 
   RETURN delta + p;
+END;
+$$ LANGUAGE plpgsql STRICT VOLATILE;
+
+/*
+ * Calling it on a working system there are conflicts may happen.
+ * Use REPEATABLE READ Tx PREPARED and retry the call if needed.
+ */
+CREATE PROCEDURE add_depots(region name, depots_num integer) AS $$
+DECLARE
+	max_num bigint;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM periods
+				 WHERE country = region AND value = 0) THEN
+    -- New region detected.
+    INSERT INTO periods (country, value) VALUES (region, 0);
+  END IF;
+  
+  max_num := COALESCE((SELECT MAX(depot_id) FROM depots), 0);
+  raise NOTICE 'max_num % %', max_num, depots_num;
+  INSERT INTO depots (label, country)
+    SELECT 'Depot ID - ' || value, region
+  FROM generate_series(max_num + 1,max_num + depots_num) AS value;
+END;
+$$ LANGUAGE plpgsql;
+
+/*
+ * Any additional environment-dependent instructions should be placed here
+ */
+CREATE PROCEDURE schema_init(nodenum integer) AS $$
+BEGIN
+  IF (nodenum > 0) THEN
+    -- CREATE EXTENSION IF NOT EXISTS snowflake;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+/* *****************************************************************************
+ *
+ * Initialization code
+ *
+ **************************************************************************** */
+ 
+-- In case we have multiple active instances
+-- Will be skipped if node number is set
+\if :{?with_data}
+  \echo "Generate data"
+
+  CALL add_depots('US', :depots_num);
+  CALL add_depots('AUS', :depots_num);
+
+  INSERT INTO products (product_id, label)
+  SELECT value, 'Product No. ' || value
+  FROM generate_series(1,:products_num) AS value;
+
+  -- Initially, each depot contains zero value of each product: first incoming
+  -- transaction will perform supply.
+  INSERT INTO supplies (depot_id, product_id, quantity, quantity_predicted)
+    SELECT depot_id,product_id,0,100 FROM depots, products;
+
+\else
+  \set with_data 0
+  \echo "Schema only mode"
+\endif
+
+CALL schema_init(:with_data);
+
+ANALYZE;
+
+/*
+ * Wait until each subscription will finish initial syncing.
+ *
+ * Convenience funtion.
+ */
+CREATE FUNCTION wait_subscriptions(
+  report_it boolean DEFAULT false,
+  timeout   interval DEFAULT '0 second',
+  delay     real DEFAULT 1.
+)
+RETURNS boolean AS $$
+DECLARE
+  end_time           Timestamp := 'infinity';
+  time_remained      Interval;
+  result             boolean := false;
+  state              record;
+  srsubstate         text;
+BEGIN
+  -- Calculate the End Time, if requested.
+  IF timeout > '0 second' THEN
+    SELECT now() + timeout INTO end_time;
+  END IF;
+
+  -- Subscription must exist and enabled
+  ASSERT NOT EXISTS (SELECT subname FROM pg_subscription WHERE subenabled = false);
+  ASSERT EXISTS (SELECT subname FROM pg_subscription WHERE subenabled = true);
+
+  srsubstate := sr.srsubstate FROM pg_subscription_rel sr
+						 			WHERE sr.srsubstate NOT IN ('s') LIMIT 1;
+  WHILE (srsubstate NOT IN ('s', 'r'))
+  LOOP
+    SELECT sr.srsubstate,s.subname, c.relname
+	FROM pg_subscription_rel sr, pg_subscription s, pg_class c
+	WHERE sr.srsubstate NOT IN ('s') AND sr.srrelid = c.oid AND s.oid = sr.srsubid
+	LIMIT 1 INTO state;
+	srsubstate := state.srsubstate;
+										
+    SELECT end_time - clock_timestamp() INTO time_remained;
+    IF time_remained < '0 second' THEN
+      RETURN false;
+    END IF;
+	IF report_it = true THEN
+      raise NOTICE 'Syncing subscription % detected (relation: %), Time remained: % (HH24:MI:SS)',
+	    state.subname, state.relname,
+        to_char(time_remained, 'HH24:MI:SS');
+    END IF;
+    PERFORM pg_sleep(delay);
+  END LOOP;
+  
+  RETURN true;
 END;
 $$ LANGUAGE plpgsql STRICT VOLATILE;

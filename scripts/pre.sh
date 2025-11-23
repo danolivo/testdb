@@ -51,7 +51,7 @@ echo "
   max_worker_processes = 32
   max_replication_slots = 32
   max_wal_senders = 32
-  snowflake.node = 1
+#  snowflake.node = 1
 " >> $M1/postgresql.conf
 
 echo "
@@ -60,7 +60,7 @@ echo "
   max_worker_processes = 32
   max_replication_slots = 32
   max_wal_senders = 32
-  snowflake.node = 2
+#  snowflake.node = 2
 " >> $M2/postgresql.conf
 
 #
@@ -72,18 +72,15 @@ pg_ctl -w -D $M2 -o "-p $PGPORT2" -l logfile_$PGPORT2.log start
 createdb -p $PGPORT1 $U
 createdb -p $PGPORT2 $U
 
-psql -p $PGPORT1 -f ../testdb/schema-sales.sql
+# Create data on the first node and let another node to sync
+psql -p $PGPORT1 -f ../testdb/schema-sales.sql -vwith_data=1
+if [[ $? -ne 0 ]]; then
+    exit;
+fi
 psql -p $PGPORT2 -f ../testdb/schema-sales.sql
-
-# Set up non-conflicting sequence
-psql -p $PGPORT1 -c "CREATE EXTENSION snowflake"
-psql -p $PGPORT2 -c "CREATE EXTENSION snowflake"
-psql -p $PGPORT1 -c "SELECT oid FROM pg_class c,
-				LATERAL (SELECT snowflake.convert_sequence_to_snowflake(c.oid))
-				WHERE relname LIKE 'sales%' AND relkind = 'S'"
-psql -p $PGPORT2 -c "SELECT oid FROM pg_class c,
-				LATERAL (SELECT snowflake.convert_sequence_to_snowflake(c.oid))
-				WHERE relname LIKE 'sales%' AND relkind = 'S'"
+if [[ $? -ne 0 ]]; then
+    exit;
+fi
 
 psql -p $PGPORT1 -c "CREATE PUBLICATION testdb_pub FOR ALL TABLES;"
 psql -p $PGPORT2 -c "CREATE PUBLICATION testdb_pub FOR ALL TABLES;"
@@ -91,21 +88,49 @@ psql -p $PGPORT2 -c "CREATE PUBLICATION testdb_pub FOR ALL TABLES;"
 # Do we need some waiting script here?
 sleep 1
 
-psql -p $PGPORT1 -c "
-  CREATE SUBSCRIPTION testdb_sub
-  CONNECTION 'port=$PGPORT2 dbname=$U'
-  PUBLICATION testdb_pub
-  WITH (copy_data = false, synchronous_commit = off, two_phase = false, origin = 'none')"
 psql -p $PGPORT2 -c "
-  CREATE SUBSCRIPTION testdb_sub
+  CREATE SUBSCRIPTION sub_$PGPORT1_$PGPORT2
   CONNECTION 'port=$PGPORT1 dbname=$U'
   PUBLICATION testdb_pub
-  WITH (copy_data = false, synchronous_commit = off, two_phase = false, origin = 'none')"
+  WITH (copy_data = true, synchronous_commit = off, two_phase = false, origin = 'none', disable_on_error = true)"
 
-pgbench -p 5432 -n -c 5 -j 5 -f ../testdb/sale.pgb -T $TEST_TIME -P 3 --max-tries=1000 -D region='US' &
-pgbench -p 5433 -n -c 5 -j 5 -f ../testdb/sale.pgb -T $TEST_TIME -P 3 --max-tries=1000 -D region='AUS' &
+psql -p $PGPORT2 -c "SELECT wait_subscriptions(
+  report_it := true, timeout := '1 minute', delay := 1)"
 
-sleep $TEST_TIME
+psql -p $PGPORT1 -c "
+  CREATE SUBSCRIPTION sub_$PGPORT2_$PGPORT1
+  CONNECTION 'port=$PGPORT2 dbname=$U'
+  PUBLICATION testdb_pub
+  WITH (copy_data = false, synchronous_commit = off, two_phase = false, origin = 'none', disable_on_error = true)"
+
+psql -p $PGPORT1 -c "SELECT wait_subscriptions(
+  report_it := true, timeout := '1 minute', delay := 1)"
+
+# Check subscriptions before the load:
+psql -p $PGPORT1 -c "SELECT subname AS disabled_subscription FROM pg_subscription WHERE subenabled = false;"
+psql -p $PGPORT2 -c "SELECT subname AS disabled_subscription FROM pg_subscription WHERE subenabled = false;"
+
+
+pids=();
+
+pgbench -p 5432 -n -c 5 -j 5 -f ../testdb/sale.pgb \
+	-T $TEST_TIME -P 3 --max-tries=1000 -D region='US' &
+pids[0]=$!
+pgbench -p 5433 -n -c 5 -j 5 -f ../testdb/sale.pgb \
+	-T $TEST_TIME -P 3 --max-tries=1000 -D region='AUS' &
+pids[1]=$!
+
+for pid in ${pids[*]}; do
+  wait $pid;
+  result=$?
+  if [[ $result -ne 0 ]]; then
+    echo "Something wrong has happened, pgbench pid: $pid, code: $result."
+    exit 1;
+  # 0 - success; 1 - invalid command-line options or internal errors;
+  # 2 - database errors or problems in the script
+fi
+done
+
 
 # ...
 #TODO: check replication log instead of plain sleep
@@ -114,4 +139,10 @@ sleep $TEST_TIME
 
 
 psql -p $PGPORT1 -f ../testdb/analytics.sql
-psql -p $PGPORT1 -f ../testdb/analytics.sql
+psql -p $PGPORT2 -f ../testdb/analytics.sql
+
+psql -p $PGPORT1 -c "SELECT usename,sent_lsn,write_lsn FROM pg_stat_replication"
+psql -p $PGPORT2 -c "SELECT usename,sent_lsn,write_lsn FROM pg_stat_replication"
+
+psql -p $PGPORT1 -c "SELECT subname FROM pg_subscription WHERE subenabled = false;"
+psql -p $PGPORT2 -c "SELECT subname FROM pg_subscription WHERE subenabled = false;"

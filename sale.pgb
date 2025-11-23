@@ -33,5 +33,5 @@ BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
     JOIN depots USING (depot_id) WHERE country = ':region'
 	ORDER BY random() LIMIT 1 \gset
   
-  SELECT do_sale(:d_id, :pr_id, :per_id);
+  SELECT do_sale(':region', :d_id, :pr_id, :per_id);
 END;

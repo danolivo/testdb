@@ -36,3 +36,4 @@ Use scripts/pre.sh to init and launch demo of the two-node configuration
 # Replication lag
 
 SELECT usename,sent_lsn,write_lsn FROM pg_stat_replication;
+SELECT subname FROM pg_subscription WHERE subenabled = false;
