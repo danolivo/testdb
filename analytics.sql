@@ -5,7 +5,8 @@
  */
 
 -- Just to see how much work was done and where.
-SELECT * FROM periods ORDER BY create_time,value;
+SELECT country,value,to_char(create_time, 'HH24:MI:SS') AS created_at
+FROM periods ORDER BY create_time,value;
 
 -- Integral checks:
 

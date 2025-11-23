@@ -27,7 +27,6 @@ elif [[ "$OSTYPE" == "darwin"* ]]; then
 else
     echo "Unintended OS."
 fi
-sleep 1
 
 M1=`pwd`/pgdata_$PGPORT1
 M2=`pwd`/pgdata_$PGPORT2
@@ -35,8 +34,8 @@ echo "MMM: $M1 $M2"
 U=`whoami`
 export PGUSER=$U
 
-rm -rf $M1 || true && mkdir $M1 && rm -rf logfile_$PGPORT1.log || true
-rm -rf $M2 || true && mkdir $M2 && rm -rf logfile_$PGPORT2.log || true
+rm -rf $M1 || true && rm -rf logfile_$PGPORT1.log || true && mkdir $M1
+rm -rf $M2 || true && rm -rf logfile_$PGPORT2.log || true && mkdir $M2
 
 export LC_ALL=C
 export LC_ALL=en_US.UTF-8
@@ -51,7 +50,6 @@ echo "
   max_worker_processes = 32
   max_replication_slots = 32
   max_wal_senders = 32
-#  snowflake.node = 1
 " >> $M1/postgresql.conf
 
 echo "
@@ -60,7 +58,6 @@ echo "
   max_worker_processes = 32
   max_replication_slots = 32
   max_wal_senders = 32
-#  snowflake.node = 2
 " >> $M2/postgresql.conf
 
 #
@@ -84,9 +81,6 @@ fi
 
 psql -p $PGPORT1 -c "CREATE PUBLICATION testdb_pub FOR ALL TABLES;"
 psql -p $PGPORT2 -c "CREATE PUBLICATION testdb_pub FOR ALL TABLES;"
-
-# Do we need some waiting script here?
-sleep 1
 
 psql -p $PGPORT2 -c "
   CREATE SUBSCRIPTION sub_$PGPORT1_$PGPORT2
@@ -112,13 +106,17 @@ psql -p $PGPORT2 -c "SELECT subname AS disabled_subscription FROM pg_subscriptio
 
 
 pids=();
-
 pgbench -p 5432 -n -c 5 -j 5 -f ../testdb/sale.pgb \
 	-T $TEST_TIME -P 3 --max-tries=1000 -D region='US' &
 pids[0]=$!
 pgbench -p 5433 -n -c 5 -j 5 -f ../testdb/sale.pgb \
 	-T $TEST_TIME -P 3 --max-tries=1000 -D region='AUS' &
 pids[1]=$!
+
+psql -p $PGPORT1 -c "
+  CALL report_replication_lag(timeout := '30 seconds', report_delay := 1)" &
+psql -p $PGPORT2 -c "
+  CALL report_replication_lag(timeout := '30 seconds', report_delay := 1)" &
 
 for pid in ${pids[*]}; do
   wait $pid;
@@ -131,11 +129,13 @@ for pid in ${pids[*]}; do
 fi
 done
 
-
-# ...
-#TODO: check replication log instead of plain sleep
-
-# TODO: Wait for full synchronisation
+# Wait for full synchronisation
+psql -p $PGPORT1 -c "
+  CALL report_replication_lag(
+    timeout := '10 minutes', report_delay := 1, stop_lag := 0)"
+psql -p $PGPORT2 -c "
+  CALL report_replication_lag(
+    timeout := '10 minutes', report_delay := 1, stop_lag := 0)"
 
 
 psql -p $PGPORT1 -f ../testdb/analytics.sql

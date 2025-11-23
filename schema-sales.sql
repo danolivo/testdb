@@ -2,7 +2,7 @@ DROP TABLE IF EXISTS
   supplies,sales,exceptions,depots,products,periods,deliveries
 CASCADE;
 DROP FUNCTION IF EXISTS do_sale,is_supplier,supply_calc;
-DROP PROCEDURE IF EXISTS do_supply,add_depots,schema_init;
+DROP PROCEDURE IF EXISTS do_supply,add_depots,schema_init,report_replication_lag;
 
 -- Number of depots at each region
 \set depots_num 5
@@ -81,20 +81,20 @@ BEGIN
   WHERE country = region;
   IF (period > c_period) THEN
 	INSERT INTO periods (value,country) VALUES (period, region);
-	
+
 	-- In the REPEATABLE READ case only one client will arrive here - others
 	-- will be aborted and re-trying will be in the new period.
 	raise LOG '--> Create new period % in region %', period,region;
 	RETURN true;
   END IF;
-  
+
   -- Normal case: no supply needed, just go shopping.
   RETURN false;
-  
+
   EXCEPTION
     WHEN OTHERS THEN
 	 NULL;
-  
+
   RETURN false;
 END;
 $$ LANGUAGE plpgsql;
@@ -115,18 +115,18 @@ BEGIN
     SELECT s.depot_id,s.product_id,s.quantity,s.quantity_predicted AS plan,
 	  supply_calc(quantity_predicted, quantity) AS delta
 	FROM supplies s JOIN depots d USING (depot_id) WHERE d.country = region;
-  
+
   FOR r IN SELECT * FROM tdata LOOP
 	-- Calculate necessary supply and UPDATE the row
 	UPDATE supplies
 	SET quantity = quantity + r.delta, quantity_predicted = r.quantity + r.delta
 	WHERE depot_id = r.depot_id AND product_id = r.product_id;
-	
+
 	INSERT INTO deliveries (depot_id,product_id,period,delta)
 	  VALUES (r.depot_id, r.product_id, period, r.delta);
 	COMMIT;
   END LOOP;
-  
+
   DROP TABLE tdata;
 END;
 $$ LANGUAGE plpgsql;
@@ -177,14 +177,14 @@ DECLARE
 	p     integer;
 BEGIN
   delta := qp - balance;
-  
+
   IF (delta < 0) THEN
     raise EXCEPTION 'Incorrect balance in the depot: (%, %)', qp, balance;
   END IF;
-  
+
   -- Add variable part into the 10%. It makes our data more lively ;)
   p :=  delta * ((0.2 * random()) - (0.2 * random()));
-  
+
   IF (balance + delta + p <= 0) THEN
     -- safety measure
     RETURN 0;
@@ -207,9 +207,8 @@ BEGIN
     -- New region detected.
     INSERT INTO periods (country, value) VALUES (region, 0);
   END IF;
-  
+
   max_num := COALESCE((SELECT MAX(depot_id) FROM depots), 0);
-  raise NOTICE 'max_num % %', max_num, depots_num;
   INSERT INTO depots (label, country)
     SELECT 'Depot ID - ' || value, region
   FROM generate_series(max_num + 1,max_num + depots_num) AS value;
@@ -232,7 +231,7 @@ $$ LANGUAGE plpgsql;
  * Initialization code
  *
  **************************************************************************** */
- 
+
 -- In case we have multiple active instances
 -- Will be skipped if node number is set
 \if :{?with_data}
@@ -258,6 +257,12 @@ $$ LANGUAGE plpgsql;
 CALL schema_init(:with_data);
 
 ANALYZE;
+
+/* *****************************************************************************
+ *
+ * Sensors
+ *
+ **************************************************************************** */
 
 /*
  * Wait until each subscription will finish initial syncing.
@@ -295,7 +300,7 @@ BEGIN
 	WHERE sr.srsubstate NOT IN ('s') AND sr.srrelid = c.oid AND s.oid = sr.srsubid
 	LIMIT 1 INTO state;
 	srsubstate := state.srsubstate;
-										
+
     SELECT end_time - clock_timestamp() INTO time_remained;
     IF time_remained < '0 second' THEN
       RETURN false;
@@ -307,7 +312,52 @@ BEGIN
     END IF;
     PERFORM pg_sleep(delay);
   END LOOP;
-  
+
   RETURN true;
 END;
 $$ LANGUAGE plpgsql STRICT VOLATILE;
+
+/*
+ * Returns value of replication lag at the end
+ */
+CREATE PROCEDURE report_replication_lag(
+  timeout          interval DEFAULT '0 second',
+  report_delay     real DEFAULT 1.,
+  stop_lag         bigint DEFAULT -1 -- disabled
+) AS $$
+DECLARE
+  end_time           Timestamp := 'infinity';
+  time_remained      Interval;
+  lag                bigint;
+  state              record;
+BEGIN
+  IF timeout > '0 second' THEN
+    SELECT now() + timeout INTO end_time;
+  END IF;
+
+  -- Subscription must exist and enabled
+  ASSERT NOT EXISTS (SELECT subname FROM pg_subscription
+					 WHERE subenabled = false);
+  ASSERT EXISTS (SELECT subname FROM pg_subscription WHERE subenabled = true);
+
+  -- Watch replication lag for reqested time
+  WHILE (SELECT end_time - clock_timestamp() > '0 seconds')
+  LOOP
+    SELECT subname,received_lsn - latest_end_lsn AS lag
+    FROM pg_stat_subscription LIMIT 1 INTO state;
+
+	raise NOTICE 'Subscription %, lag: %',
+	      state.subname,state.lag;
+
+	-- Check if we need to exit because of a lag threshold
+	IF (stop_lag >= 0 AND state.lag <= stop_lag) THEN
+		EXIT;
+	ELSIF (stop_lag >= 0) THEN
+	  raise NOTICE 'Continue waiting on subscription %, lag: %, stop_lag: %',
+	      state.subname,state.lag, stop_lag;
+	END IF;
+
+	PERFORM pg_sleep(report_delay);
+  END LOOP;
+END;
+$$ LANGUAGE plpgsql;
