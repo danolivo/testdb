@@ -1,8 +1,9 @@
 DROP TABLE IF EXISTS
   supplies,sales,exceptions,depots,products,periods,deliveries
 CASCADE;
-DROP FUNCTION IF EXISTS do_sale,is_supplier,supply_calc;
-DROP PROCEDURE IF EXISTS do_supply,add_depots,schema_init,report_replication_lag;
+DROP FUNCTION IF EXISTS do_sale,is_supplier,supply_calc,wait_subscriptions;
+DROP PROCEDURE IF EXISTS do_supply,add_depots,schema_init,
+  report_replication_lag;
 
 -- Number of depots at each region
 \set depots_num 5
@@ -30,7 +31,7 @@ CREATE TABLE supplies (
   depot_id           integer REFERENCES depots (depot_id),
   product_id         integer REFERENCES products (product_id),
   quantity           integer NOT NULL CHECK (quantity >= 0),
-  quantity_predicted integer NOT NULL CHECK (quantity_predicted >= 0),
+  planned integer NOT NULL CHECK (planned >= 0),
   PRIMARY KEY (depot_id, product_id)
 );
 CREATE TABLE sales (
@@ -69,11 +70,13 @@ CREATE TABLE deliveries (
  *
  **************************************************************************** */
 
---
--- Am I a supplier in the region?
---
-CREATE FUNCTION is_supplier(period bigint, region name)
-RETURNS boolean AS $$
+/*
+ * Am I a supplier in the region?
+ *
+ * Returns the previous period or a negative value, if no supply needed.
+ */
+CREATE FUNCTION is_supplier(region name, period bigint)
+RETURNS bigint AS $$
 DECLARE
 	c_period bigint;
 BEGIN
@@ -85,17 +88,17 @@ BEGIN
 	-- In the REPEATABLE READ case only one client will arrive here - others
 	-- will be aborted and re-trying will be in the new period.
 	raise LOG '--> Create new period % in region %', period,region;
-	RETURN true;
+	RETURN c_period;
   END IF;
 
   -- Normal case: no supply needed, just go shopping.
-  RETURN false;
+  RETURN -1;
 
   EXCEPTION
     WHEN OTHERS THEN
 	 NULL;
 
-  RETURN false;
+  RETURN -1;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -105,21 +108,23 @@ $$ LANGUAGE plpgsql;
  * Pass through each (depot,product) record, calculate necessary quantity and
  * perform update
  */
-CREATE PROCEDURE do_supply(region name, period bigint)
+CREATE PROCEDURE do_supply(region name, period bigint, prev_period bigint)
 AS $$
 DECLARE
 	r record;
 BEGIN
   raise LOG '--> supply % %', region, period;
   CREATE TEMPORARY TABLE tdata AS
-    SELECT s.depot_id,s.product_id,s.quantity,s.quantity_predicted AS plan,
-	  supply_calc(quantity_predicted, quantity) AS delta
-	FROM supplies s JOIN depots d USING (depot_id) WHERE d.country = region;
+    SELECT s.depot_id,s.product_id,s.quantity,
+	  supply_calc(s.planned, s.quantity, e.counter) AS delta
+	FROM supplies s JOIN depots d USING (depot_id) JOIN exceptions e
+	USING (depot_id, product_id)
+	WHERE d.country = region AND e.period = prev_period;
 
   FOR r IN SELECT * FROM tdata LOOP
 	-- Calculate necessary supply and UPDATE the row
 	UPDATE supplies
-	SET quantity = quantity + r.delta, quantity_predicted = r.quantity + r.delta
+	SET quantity = quantity + r.delta, planned = r.quantity + r.delta
 	WHERE depot_id = r.depot_id AND product_id = r.product_id;
 
 	INSERT INTO deliveries (depot_id,product_id,period,delta)
@@ -170,27 +175,28 @@ $$ LANGUAGE plpgsql;
 --
 -- Calculate how much quantity of each product we should deliver to the depot
 --
-CREATE FUNCTION supply_calc(qp integer, balance integer)
+CREATE FUNCTION supply_calc(planned integer, balance integer,
+                            lack_counter integer)
 RETURNS integer AS $$
 DECLARE
 	delta integer;
 	p     integer;
 BEGIN
-  delta := qp - balance;
+  delta := planned - balance + lack_counter;
 
   IF (delta < 0) THEN
-    raise EXCEPTION 'Incorrect balance in the depot: (%, %)', qp, balance;
+    raise EXCEPTION 'Incorrect balance in the depot: (%, %)', planned, balance;
   END IF;
 
   -- Add variable part into the 10%. It makes our data more lively ;)
-  p :=  delta * ((0.2 * random()) - (0.2 * random()));
+  delta := delta + delta * ((0.2 * random()) - (0.2 * random()));
 
-  IF (balance + delta + p <= 0) THEN
+  IF (delta < 0) THEN
     -- safety measure
     RETURN 0;
   END IF;
 
-  RETURN delta + p;
+  RETURN delta;
 END;
 $$ LANGUAGE plpgsql STRICT VOLATILE;
 
@@ -246,7 +252,7 @@ $$ LANGUAGE plpgsql;
 
   -- Initially, each depot contains zero value of each product: first incoming
   -- transaction will perform supply.
-  INSERT INTO supplies (depot_id, product_id, quantity, quantity_predicted)
+  INSERT INTO supplies (depot_id, product_id, quantity, planned)
     SELECT depot_id,product_id,0,100 FROM depots, products;
 
 \else

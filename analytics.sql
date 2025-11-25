@@ -47,3 +47,15 @@ SELECT * FROM (
 	  WHERE success = true GROUP BY depot_id
   ) USING (depot_id)
 ORDER BY depot_id;
+
+/*
+ * Just analytics
+ */
+
+-- Sale dynamics throughout the periods
+SELECT count(*) FROM sales GROUP BY period ORDER BY period;
+
+-- Total delivery dynamics
+SELECT period,sum(delta) FROM deliveries
+GROUP BY period
+ORDER BY period;

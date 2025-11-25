@@ -1,5 +1,5 @@
 # testdb
-Database for testing purposes 
+Database for testing purposes
 
 # Usage
 Initialise the schema:
@@ -17,10 +17,21 @@ _'sales in two regions, each one covered by separate set of pgbench clients'_
 One instance case.
 
 ```
-psql -f ../testdb/schema-sales.sql
-pgbench -n -c 5 -j 5 -f ../testdb/sale.pgb -T 30 -P 3 --max-tries=1000 -D region='US' &
-pgbench -n -c 5 -j 5 -f ../testdb/sale.pgb -T 30 -P 3 --max-tries=1000 -D region='AUS' &
-psql -f ../testdb/analytics.sql
+psql -f ../../testdb/schema-sales.sql -vwith_data=1
+pgbench -n -c 5 -j 5 -f ../../testdb/sale.pgb -T 360 -P 3 --max-tries=1000 -D region='US' &
+pgbench -n -c 5 -j 5 -f ../../testdb/sale.pgb -T 360 -P 3 --max-tries=1000 -D region='AUS'
+psql -f ../../testdb/analytics.sql
+```
+
+At some point in time you may decide to open the company's branch in one more country.
+Add depots, fill them with products and start load by something like the following:
+
+```
+psql -c "CALL add_depots('KAZ', 3);"
+psql -c "INSERT INTO supplies (depot_id, product_id, quantity, planned)
+           SELECT depot_id,product_id,0,100 FROM depots d, products
+		   WHERE d.country = 'KAZ' AND active = true"
+pgbench -n -c 2 -j 2 -f ../../testdb/sale.pgb -T 360 -P 3 --max-tries=1000 -D region='KAZ'
 ```
 
 ## Example No.2

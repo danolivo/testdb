@@ -15,15 +15,17 @@ SELECT (extract(epoch FROM CURRENT_TIMESTAMP)::bigint / :period_length)::bigint
 -- Check period switch and, as a result, perform supply.
 -- TODO: calculate predicted quantity for the next period.
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-  SELECT is_supplier(:per_id, ':region') AS is_supplier \gset
+  SELECT is_supplier(':region'::name, :per_id) AS prev_period \gset
 END;
 
-\if (:is_supplier)
+\if (:prev_period > 0)
   /*
    * Calculate necessary quantity for each depot and product in the current
    * region and perform supply.
+   * If we fail here, we need to exit, repeat, or SHOUT OUT about an error -
+   * we have only one supply attempt at the current period.
    */
-  CALL do_supply(':region', :per_id);
+  CALL do_supply(':region', :per_id, :prev_period);
 \endif
 
 -- Make sale
@@ -32,6 +34,6 @@ BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
   SELECT depot_id AS d_id, product_id AS pr_id FROM supplies
     JOIN depots USING (depot_id) WHERE country = ':region'
 	ORDER BY random() LIMIT 1 \gset
-  
+
   SELECT do_sale(':region', :d_id, :pr_id, :per_id);
 END;
