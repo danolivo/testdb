@@ -48,8 +48,13 @@ SELECT * FROM (
   ) USING (depot_id)
 ORDER BY depot_id;
 
+-- Check: number of delivery periods is equal to number of periods
+SELECT * FROM
+  (SELECT count(DISTINCT period) AS delivery_periods FROM deliveries),
+  (SELECT count(DISTINCT value) FROM periods) AS q(periods);
+
 /*
- * Just analytics
+ * Bare analytics
  */
 
 -- Sale dynamics throughout the periods

@@ -30,7 +30,7 @@ Add depots, fill them with products and start load by something like the followi
 psql -c "CALL add_depots('KAZ', 3);"
 psql -c "INSERT INTO supplies (depot_id, product_id, quantity, planned)
            SELECT depot_id,product_id,0,100 FROM depots d, products
-		   WHERE d.country = 'KAZ' AND active = true"
+		   WHERE d.country = 'KAZ' AND d.active = true"
 pgbench -n -c 2 -j 2 -f ../../testdb/sale.pgb -T 360 -P 3 --max-tries=1000 -D region='KAZ'
 ```
 
