@@ -51,7 +51,8 @@ ORDER BY depot_id;
 -- Check: number of delivery periods is equal to number of periods
 SELECT * FROM
   (SELECT count(DISTINCT period) AS delivery_periods FROM deliveries),
-  (SELECT count(DISTINCT value) FROM periods) AS q(periods);
+  (SELECT count(DISTINCT value) FROM periods) AS q(periods),
+  (SELECT count(DISTINCT period) FROM exceptions) AS q1(eperiods);
 
 /*
  * Bare analytics

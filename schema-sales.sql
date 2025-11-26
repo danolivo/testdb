@@ -2,8 +2,7 @@ DROP TABLE IF EXISTS
   supplies,sales,exceptions,depots,products,periods,deliveries
 CASCADE;
 DROP FUNCTION IF EXISTS do_sale,is_supplier,supply_calc,wait_subscriptions;
-DROP PROCEDURE IF EXISTS do_supply,add_depots,schema_init,
-  report_replication_lag;
+DROP PROCEDURE IF EXISTS add_depots,schema_init, report_replication_lag,do_supply;
 
 -- Number of depots at each region
 \set depots_num 5
@@ -106,33 +105,75 @@ $$ LANGUAGE plpgsql;
  * Perform supply
  *
  * Pass through each (depot,product) record, calculate necessary quantity and
- * perform update
+ * perform update.
+ *
+ * NOTE:
+ * Here is an immense risk of serialisation failure. Even when updating
+ * supply records one by one, we need to be 100% sure we have completed the
+ * current operation before switching to the next. That's why a fail-safe
+ * approach is used.
  */
 CREATE PROCEDURE do_supply(region name, period bigint, prev_period bigint)
 AS $$
 DECLARE
-	r record;
+  r           record;
+  nrecs       integer;
+  done        boolean;
+  retry_count integer;
+  max_retries integer := 100;
 BEGIN
-  raise LOG '--> supply % %', region, period;
+  raise DEBUG '--> supply % % (%)', ':region', period, prev_period;
+
   CREATE TEMPORARY TABLE tdata AS
     SELECT s.depot_id,s.product_id,s.quantity,
-	  supply_calc(s.planned, s.quantity, e.counter) AS delta
-	FROM supplies s JOIN depots d USING (depot_id) JOIN exceptions e
-	USING (depot_id, product_id)
-	WHERE d.country = region AND e.period = prev_period;
+	  supply_calc(s.planned, s.quantity, COALESCE(e.counter, 0)) AS delta
+	FROM supplies s JOIN depots d USING (depot_id) LEFT JOIN exceptions e
+	ON (s.depot_id = e.depot_id AND s.product_id = e.product_id AND e.period = prev_period)
+	WHERE d.country = region;
+
+  SELECT count(*) FROM tdata INTO nrecs;
+  raise DEBUG '--> Number of records to be processed: %', nrecs;
 
   FOR r IN SELECT * FROM tdata LOOP
-	-- Calculate necessary supply and UPDATE the row
-	UPDATE supplies
-	SET quantity = quantity + r.delta, planned = r.quantity + r.delta
-	WHERE depot_id = r.depot_id AND product_id = r.product_id;
 
-	INSERT INTO deliveries (depot_id,product_id,period,delta)
-	  VALUES (r.depot_id, r.product_id, period, r.delta);
-	COMMIT;
+    done:= false;
+	retry_count := 0;
+
+   -- XXX: what type of serialisation failure we are afraid of here?
+    WHILE NOT done LOOP
+      BEGIN
+        -- Calculate necessary supply and UPDATE the row
+        UPDATE supplies
+        SET quantity = quantity + r.delta, planned = r.quantity + r.delta
+        WHERE depot_id = r.depot_id AND product_id = r.product_id;
+
+        /* It is safe because the only this function may add a record */
+        INSERT INTO deliveries (depot_id,product_id,period,delta)
+          VALUES (r.depot_id, r.product_id, period, r.delta);
+
+		done := true;
+	  EXCEPTION
+	  WHEN serialization_failure THEN
+	    retry_count := retry_count + 1;
+		IF retry_count > max_retries THEN
+		  raise EXCEPTION 'Gave up after % retries due to serialization errors', retry_count;
+		END IF;
+	  END; -- Let sales transactions to perform
+	END LOOP;
+
+	IF retry_count > 0 THEN
+	  raise WARNING 'change (%, %, %) applied after % retries',
+	                r.depot_id, r.product_id, period, retry_count;
+	END IF;
   END LOOP;
 
   DROP TABLE tdata;
+
+EXCEPTION
+  WHEN OTHERS THEN
+    -- It shouldn't happen ...
+    raise EXCEPTION 'Supply cycle does not end successfully! (%, %, %)',
+	                r.depot_id, r.product_id, period;
 END;
 $$ LANGUAGE plpgsql;
 

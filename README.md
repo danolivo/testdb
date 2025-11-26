@@ -18,8 +18,8 @@ One instance case.
 
 ```
 psql -f ../../testdb/schema-sales.sql -vwith_data=1
-pgbench -n -c 5 -j 5 -f ../../testdb/sale.pgb -T 360 -P 3 --max-tries=1000 -D region='US' &
-pgbench -n -c 5 -j 5 -f ../../testdb/sale.pgb -T 360 -P 3 --max-tries=1000 -D region='AUS'
+pgbench -n -c 5 -j 5 -f ../../testdb/sale.pgb -T 180 -P 3 --max-tries=1000 -D region='US' &
+pgbench -n -c 5 -j 5 -f ../../testdb/sale.pgb -T 180 -P 3 --max-tries=1000 -D region='AUS'
 psql -f ../../testdb/analytics.sql
 ```
 
