@@ -7,7 +7,7 @@ export PATH=$INSTDIR/bin:$PATH
 
 PGPORT1=5432
 PGPORT2=5433
-TEST_TIME=30
+TEST_TIME=600
 
 pg_ctl -o "-p $PGPORT1" -D $M1 stop
 pg_ctl -o "-p $PGPORT2" -D $M2 stop
@@ -70,11 +70,11 @@ createdb -p $PGPORT1 $U
 createdb -p $PGPORT2 $U
 
 # Create data on the first node and let another node to sync
-psql -p $PGPORT1 -f ../testdb/schema-sales.sql -vwith_data=1
+psql -p $PGPORT1 -f ../../testdb/schema-sales.sql -vwith_data=1
 if [[ $? -ne 0 ]]; then
     exit;
 fi
-psql -p $PGPORT2 -f ../testdb/schema-sales.sql
+psql -p $PGPORT2 -f ../../testdb/schema-sales.sql
 if [[ $? -ne 0 ]]; then
     exit;
 fi
@@ -106,17 +106,32 @@ psql -p $PGPORT2 -c "SELECT subname AS disabled_subscription FROM pg_subscriptio
 
 
 pids=();
-pgbench -p 5432 -n -c 5 -j 5 -f ../testdb/sale.pgb \
+pgbench -p 5432 -n -c 5 -j 5 -f ../../testdb/sale.pgb \
 	-T $TEST_TIME -P 3 --max-tries=1000 -D region='US' &
 pids[0]=$!
-pgbench -p 5433 -n -c 5 -j 5 -f ../testdb/sale.pgb \
+pgbench -p 5433 -n -c 5 -j 5 -f ../../testdb/sale.pgb \
 	-T $TEST_TIME -P 3 --max-tries=1000 -D region='AUS' &
 pids[1]=$!
 
+echo 'replication lag' > lag_node_1.txt
+echo 'replication lag' > lag_node_2.txt
 psql -p $PGPORT1 -c "
-  CALL report_replication_lag(timeout := '30 seconds', report_delay := 1)" &
+  CALL report_replication_lag(timeout := '$TEST_TIME seconds', report_delay := 3)" 2> lag_node_1.txt &
 psql -p $PGPORT2 -c "
-  CALL report_replication_lag(timeout := '30 seconds', report_delay := 1)" &
+  CALL report_replication_lag(timeout := '$TEST_TIME seconds', report_delay := 3)" 2> lag_node_2.txt &
+
+# Check PGDATA size periodically. Good system should converge to some more or
+# less stable value. That's no option in our test - we keep history. But WAL
+# size should come to a stable value.
+echo 'PGDATA-1 | PGDATA-2 | WAL1 | WAL2' > disk_usage.txt
+for i in $(seq 1 "$TEST_TIME"); do
+    size_node_1=$(du -ms $M1 | awk '{print $1}')
+	size_node_2=$(du -ms $M2 | awk '{print $1}')
+	size_wal_1=$(du -ms $M1/pg_wal/ | awk '{print $1}')
+	size_wal_2=$(du -ms $M2/pg_wal/ | awk '{print $1}')
+	echo "$size_node_1 | $size_node_2 | $size_wal_1 | $size_wal_2" >> disk_usage.txt
+    sleep 1
+done &
 
 for pid in ${pids[*]}; do
   wait $pid;
@@ -138,8 +153,8 @@ psql -p $PGPORT2 -c "
     timeout := '10 minutes', report_delay := 1, stop_lag := 0)"
 
 
-psql -p $PGPORT1 -f ../testdb/analytics.sql
-psql -p $PGPORT2 -f ../testdb/analytics.sql
+psql -p $PGPORT1 -f ../../testdb/analytics.sql
+psql -p $PGPORT2 -f ../../testdb/analytics.sql
 
 psql -p $PGPORT1 -c "SELECT usename,sent_lsn,write_lsn FROM pg_stat_replication"
 psql -p $PGPORT2 -c "SELECT usename,sent_lsn,write_lsn FROM pg_stat_replication"
