@@ -50,6 +50,19 @@ echo "
   max_worker_processes = 32
   max_replication_slots = 32
   max_wal_senders = 32
+  
+  # Just arbitrary ChatGPT's selection
+  autovacuum = on
+  autovacuum_max_workers = 8
+  autovacuum_naptime = 10s
+  autovacuum_vacuum_threshold = 50
+  autovacuum_vacuum_scale_factor = 0.005
+  autovacuum_analyze_scale_factor = 0.0025
+  autovacuum_vacuum_cost_limit = 3000
+  autovacuum_vacuum_cost_delay = 0
+  max_wal_size = 1GB
+  min_wal_size = 1MB
+  checkpoint_timeout = 15min
 " >> $M1/postgresql.conf
 
 echo "
@@ -58,6 +71,19 @@ echo "
   max_worker_processes = 32
   max_replication_slots = 32
   max_wal_senders = 32
+  
+  # Just arbitrary ChatGPT's selection
+  autovacuum = on
+  autovacuum_max_workers = 8
+  autovacuum_naptime = 10s
+  autovacuum_vacuum_threshold = 50
+  autovacuum_vacuum_scale_factor = 0.005
+  autovacuum_analyze_scale_factor = 0.0025
+  autovacuum_vacuum_cost_limit = 3000
+  autovacuum_vacuum_cost_delay = 0
+  max_wal_size = 1GB
+  min_wal_size = 1MB
+  checkpoint_timeout = 15min
 " >> $M2/postgresql.conf
 
 #
