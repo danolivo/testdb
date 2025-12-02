@@ -50,7 +50,7 @@ echo "
   max_worker_processes = 32
   max_replication_slots = 32
   max_wal_senders = 32
-  
+
   # Just arbitrary ChatGPT's selection
   autovacuum = on
   autovacuum_max_workers = 8
@@ -71,7 +71,7 @@ echo "
   max_worker_processes = 32
   max_replication_slots = 32
   max_wal_senders = 32
-  
+
   # Just arbitrary ChatGPT's selection
   autovacuum = on
   autovacuum_max_workers = 8
@@ -96,11 +96,11 @@ createdb -p $PGPORT1 $U
 createdb -p $PGPORT2 $U
 
 # Create data on the first node and let another node to sync
-psql -p $PGPORT1 -f ../../testdb/schema-sales.sql -vwith_data=1
+psql -p $PGPORT1 -f ../../testdb/schema.sql -vwith_data=1
 if [[ $? -ne 0 ]]; then
     exit;
 fi
-psql -p $PGPORT2 -f ../../testdb/schema-sales.sql
+psql -p $PGPORT2 -f ../../testdb/schema.sql
 if [[ $? -ne 0 ]]; then
     exit;
 fi

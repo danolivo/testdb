@@ -4,7 +4,7 @@ Database for testing purposes
 # Usage
 Initialise the schema:
 ```
-psql -f schema-sales.sql
+psql -f schema.sql
 ```
 
 Use `-D varname=value` to identify specific region that was covered by a specific
@@ -17,7 +17,7 @@ _'sales in two regions, each one covered by separate set of pgbench clients'_
 One instance case.
 
 ```
-psql -f ../../testdb/schema-sales.sql -vwith_data=1
+psql -f ../../testdb/schema.sql -vwith_data=1
 pgbench -n -c 5 -j 5 -f ../../testdb/sale.pgb -T 180 -P 3 --max-tries=1000 -D region='US' &
 pgbench -n -c 5 -j 5 -f ../../testdb/sale.pgb -T 180 -P 3 --max-tries=1000 -D region='AUS'
 psql -f ../../testdb/analytics.sql
